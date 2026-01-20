@@ -1,39 +1,35 @@
-// AIP Proxy - Man-in-the-Middle Policy Enforcement for MCP
+// AIP - Agent Identity Protocol Proxy
 //
-// This application acts as a transparent proxy ("shim") between an MCP client
-// (typically an LLM agent) and an MCP server (the tool provider). It intercepts
-// all JSON-RPC messages, applies policy checks, and either forwards allowed
-// requests or blocks forbidden ones.
+// A policy enforcement proxy for MCP (Model Context Protocol) that intercepts
+// tool calls and enforces security policies between AI agents and tool servers.
 //
-// Architecture Overview:
+// Architecture:
 //
 //	┌─────────────┐     ┌──────────────────┐     ┌─────────────────┐
-//	│             │     │                  │     │                 │
 //	│  MCP Client │────▶│    AIP Proxy     │────▶│   MCP Server    │
-//	│   (Agent)   │     │  (This Program)  │     │  (Subprocess)   │
-//	│             │◀────│                  │◀────│                 │
+//	│   (Agent)   │◀────│  Policy Engine   │◀────│  (Subprocess)   │
 //	└─────────────┘     └──────────────────┘     └─────────────────┘
-//	    stdin              Goroutine 1:              subprocess
-//	    stdout             Intercept & Check         stdin/stdout
-//	                       Goroutine 2:
-//	                       Passthrough
 //
-// Data Flow:
-//
-//  1. UPSTREAM (Client → Server): Read from stdin, decode JSON-RPC, check policy,
-//     forward to subprocess stdin if allowed, or return error to stdout if blocked.
-//
-//  2. DOWNSTREAM (Server → Client): Read from subprocess stdout, copy directly
-//     to our stdout. (We trust tool responses in MVP; future versions may filter.)
-//
-// Signal Handling:
-//
-//	The proxy handles SIGTERM and SIGINT to gracefully terminate the subprocess.
-//	This ensures clean shutdown when running in containers or systemd.
+// Features:
+//   - Tool allowlist enforcement (only permitted tools can be called)
+//   - Argument validation with regex patterns
+//   - Human-in-the-Loop approval (action: ask) via native OS dialogs
+//   - DLP (Data Loss Prevention) output scanning and redaction
+//   - JSONL audit logging for compliance and debugging
+//   - Monitor mode for testing policies without enforcement
 //
 // Usage:
 //
-//	aip-proxy --target "python mcp_server.py" --policy agent.yaml
+//	# Basic usage - wrap an MCP server with policy enforcement
+//	aip --target "python mcp_server.py" --policy policy.yaml
+//
+//	# Generate Cursor IDE configuration
+//	aip --generate-cursor-config --policy policy.yaml --target "docker run mcp/server"
+//
+//	# Monitor mode (log violations but don't block)
+//	aip --target "npx @mcp/server" --policy monitor.yaml --verbose
+//
+// For more information: https://github.com/ArangoGutierrez/agent-identity-protocol
 package main
 
 import (
@@ -47,11 +43,13 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
 
 	"github.com/ArangoGutierrez/agent-identity-protocol/proxy/pkg/audit"
+	"github.com/ArangoGutierrez/agent-identity-protocol/proxy/pkg/dlp"
 	"github.com/ArangoGutierrez/agent-identity-protocol/proxy/pkg/policy"
 	"github.com/ArangoGutierrez/agent-identity-protocol/proxy/pkg/protocol"
 	"github.com/ArangoGutierrez/agent-identity-protocol/proxy/pkg/ui"
@@ -77,21 +75,83 @@ type Config struct {
 
 	// Verbose enables detailed logging of intercepted messages.
 	Verbose bool
+
+	// GenerateCursorConfig prints Cursor IDE MCP configuration and exits.
+	GenerateCursorConfig bool
 }
 
 func parseFlags() *Config {
 	cfg := &Config{}
 
+	// Custom usage message
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, `AIP - Agent Identity Protocol Proxy
+
+A security proxy that enforces policies on MCP tool calls.
+
+USAGE:
+  aip --target "command" --policy policy.yaml [options]
+
+EXAMPLES:
+  # Wrap an MCP server with policy enforcement
+  aip --target "python mcp_server.py" --policy policy.yaml
+
+  # Run in monitor mode (logs violations but doesn't block)
+  aip --target "npx @mcp/server" --policy monitor.yaml --verbose
+
+  # Generate configuration for Cursor IDE
+  aip --generate-cursor-config --policy policy.yaml --target "docker run mcp/server"
+
+MODES:
+  Enforce (default):
+    Blocks tool calls that violate policy rules.
+    Returns JSON-RPC error (-32001) to the client.
+
+  Monitor (spec.mode: monitor in policy):
+    Logs violations but allows all requests through.
+    Use for testing policies before enforcement.
+
+AUDIT LOGS:
+  All tool calls are logged to the audit file (default: aip-audit.jsonl).
+  Each entry includes: timestamp, tool, args, decision, violation status.
+  View logs: cat aip-audit.jsonl | jq '.'
+  Find violations: cat aip-audit.jsonl | jq 'select(.violation == true)'
+
+OPTIONS:
+`)
+		flag.PrintDefaults()
+		fmt.Fprintf(os.Stderr, `
+POLICY FILE:
+  See examples/ directory for policy templates:
+    - read-only.yaml         Only allow read operations
+    - monitor-mode.yaml      Log everything, block nothing
+    - gemini-jack-defense.yaml  Defense against prompt injection
+
+For more information: https://github.com/ArangoGutierrez/agent-identity-protocol
+`)
+	}
+
 	flag.StringVar(&cfg.Target, "target", "", "Command to run as MCP server (required)")
-	flag.StringVar(&cfg.PolicyPath, "policy", "agent.yaml", "Path to policy file")
-	flag.StringVar(&cfg.AuditPath, "audit", "aip-audit.jsonl", "Path to audit log file (MUST NOT be stdout)")
-	flag.BoolVar(&cfg.Verbose, "verbose", false, "Enable verbose logging")
+	flag.StringVar(&cfg.PolicyPath, "policy", "agent.yaml", "Path to policy YAML file")
+	flag.StringVar(&cfg.AuditPath, "audit", "aip-audit.jsonl", "Path to audit log file")
+	flag.BoolVar(&cfg.Verbose, "verbose", false, "Enable verbose logging to stderr")
+	flag.BoolVar(&cfg.GenerateCursorConfig, "generate-cursor-config", false, "Print Cursor MCP config JSON and exit")
 
 	flag.Parse()
 
+	// If generating config, we need both target and policy
+	if cfg.GenerateCursorConfig {
+		if cfg.Target == "" || cfg.PolicyPath == "" {
+			fmt.Fprintln(os.Stderr, "Error: --generate-cursor-config requires both --target and --policy")
+			os.Exit(1)
+		}
+		return cfg
+	}
+
+	// Normal mode requires target
 	if cfg.Target == "" {
 		fmt.Fprintln(os.Stderr, "Error: --target flag is required")
-		fmt.Fprintln(os.Stderr, "Usage: aip-proxy --target 'command args' --policy agent.yaml")
+		fmt.Fprintln(os.Stderr, "Run 'aip -h' for usage information")
 		os.Exit(1)
 	}
 
@@ -104,6 +164,12 @@ func parseFlags() *Config {
 
 func main() {
 	cfg := parseFlags()
+
+	// Handle config generation mode
+	if cfg.GenerateCursorConfig {
+		generateCursorConfig(cfg)
+		return
+	}
 
 	// CRITICAL STREAM SAFETY:
 	// - stdout is RESERVED for JSON-RPC transport (client ↔ server)
@@ -173,6 +239,64 @@ func main() {
 }
 
 // -----------------------------------------------------------------------------
+// Cursor Config Generator
+// -----------------------------------------------------------------------------
+
+// generateCursorConfig prints a JSON configuration snippet for Cursor IDE's
+// MCP settings file (~/.cursor/mcp.json). This makes it easy to integrate
+// AIP with Cursor by wrapping MCP servers with policy enforcement.
+func generateCursorConfig(cfg *Config) {
+	// Get absolute path to current executable
+	execPath, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: failed to get executable path: %v\n", err)
+		os.Exit(1)
+	}
+	execPath, err = filepath.EvalSymlinks(execPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: failed to resolve executable path: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Get absolute path to policy file
+	policyPath, err := filepath.Abs(cfg.PolicyPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: failed to resolve policy path: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Verify policy file exists
+	if _, err := os.Stat(policyPath); os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "Warning: policy file does not exist: %s\n", policyPath)
+	}
+
+	// Build the configuration structure
+	config := map[string]interface{}{
+		"mcpServers": map[string]interface{}{
+			"protected-tool": map[string]interface{}{
+				"command": execPath,
+				"args": []string{
+					"--policy", policyPath,
+					"--target", cfg.Target,
+				},
+			},
+		},
+	}
+
+	// Pretty print JSON
+	output, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: failed to generate JSON: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println(string(output))
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Add the above JSON to ~/.cursor/mcp.json")
+	fmt.Fprintln(os.Stderr, "Then restart Cursor to enable the protected MCP server.")
+}
+
+// -----------------------------------------------------------------------------
 // Proxy Implementation
 // -----------------------------------------------------------------------------
 
@@ -184,7 +308,7 @@ func main() {
 //  3. Applies policy checks to tool/call requests
 //  4. Passes through allowed requests, blocks forbidden ones
 //  5. Prompts user for approval on action="ask" rules (Human-in-the-Loop)
-//  6. Forwards responses from server to client unchanged
+//  6. Scans downstream responses for sensitive data (DLP) and redacts
 //  7. Logs all decisions to the audit log file (NEVER stdout)
 type Proxy struct {
 	ctx         context.Context
@@ -193,6 +317,7 @@ type Proxy struct {
 	logger      *log.Logger
 	auditLogger *audit.Logger
 	prompter    *ui.Prompter
+	dlpScanner  *dlp.Scanner
 
 	// cmd is the subprocess running the target MCP server
 	cmd *exec.Cmd
@@ -217,7 +342,8 @@ type Proxy struct {
 //  1. Parses the target command into executable and arguments
 //  2. Creates the subprocess with piped stdin/stdout
 //  3. Initializes the user prompter for Human-in-the-Loop approval
-//  4. Starts the subprocess
+//  4. Initializes the DLP scanner for output redaction
+//  5. Starts the subprocess
 //
 // The subprocess inherits our stderr for error output visibility.
 // The auditLogger is used to record all policy decisions to a file.
@@ -253,6 +379,17 @@ func NewProxy(ctx context.Context, cfg *Config, engine *policy.Engine, logger *l
 		logger.Printf("Warning: Running in headless environment; action=ask rules will auto-deny")
 	}
 
+	// Initialize DLP scanner for output redaction
+	var dlpScanner *dlp.Scanner
+	dlpCfg := engine.GetDLPConfig()
+	if dlpCfg != nil && dlpCfg.IsEnabled() {
+		dlpScanner, err = dlp.NewScanner(dlpCfg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize DLP scanner: %w", err)
+		}
+		logger.Printf("DLP enabled with %d patterns: %v", dlpScanner.PatternCount(), dlpScanner.PatternNames())
+	}
+
 	// Start the subprocess
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start subprocess: %w", err)
@@ -267,6 +404,7 @@ func NewProxy(ctx context.Context, cfg *Config, engine *policy.Engine, logger *l
 		logger:      logger,
 		auditLogger: auditLogger,
 		prompter:    prompter,
+		dlpScanner:  dlpScanner,
 		cmd:         cmd,
 		subStdin:    subStdin,
 		subStdout:   subStdout,
@@ -313,16 +451,26 @@ func (p *Proxy) Shutdown() {
 }
 
 // -----------------------------------------------------------------------------
-// Downstream Handler (Server → Client)
+// Downstream Handler (Server → Client) - DLP INTERCEPTION POINT
 // -----------------------------------------------------------------------------
 
-// handleDownstream reads from subprocess stdout and copies to our stdout.
+// handleDownstream reads from subprocess stdout, applies DLP scanning, and
+// forwards to our stdout.
 //
-// In the MVP, we trust all responses from the MCP server and pass them through
-// unchanged. Future versions may implement:
-//   - Response filtering for sensitive data (DLP)
-//   - Response logging for audit trails
-//   - Response modification for testing/debugging
+// DLP (Data Loss Prevention) scanning inspects tool responses for sensitive
+// information (PII, API keys, secrets) and redacts matches before the response
+// reaches the client. This prevents accidental data exfiltration.
+//
+// Flow:
+//  1. Read JSON-RPC message from subprocess stdout
+//  2. Attempt to parse as JSON-RPC response
+//  3. If valid JSON-RPC with result, scan content for sensitive data
+//  4. Replace matches with [REDACTED:<RuleName>]
+//  5. Log DLP events to audit trail
+//  6. Forward (potentially modified) response to client stdout
+//
+// Robustness: If the tool outputs invalid JSON or non-JSON data (e.g., logs),
+// we pass it through unchanged to avoid breaking the stream.
 //
 // This goroutine runs until the subprocess stdout is closed (subprocess exits).
 func (p *Proxy) handleDownstream() {
@@ -342,13 +490,18 @@ func (p *Proxy) handleDownstream() {
 		}
 
 		if p.cfg.Verbose {
-			p.logger.Printf("← [downstream] %s", strings.TrimSpace(string(line)))
+			p.logger.Printf("← [downstream raw] %s", strings.TrimSpace(string(line)))
 		}
 
-		// Passthrough: write directly to stdout
-		// Use mutex to prevent interleaving with error responses from upstream
+		// Apply DLP scanning if enabled
+		outputLine := line
+		if p.dlpScanner != nil && p.dlpScanner.IsEnabled() {
+			outputLine = p.applyDLP(line)
+		}
+
+		// Write to stdout (use mutex to prevent interleaving with upstream errors)
 		p.mu.Lock()
-		_, writeErr := os.Stdout.Write(line)
+		_, writeErr := os.Stdout.Write(outputLine)
 		p.mu.Unlock()
 
 		if writeErr != nil {
@@ -356,6 +509,156 @@ func (p *Proxy) handleDownstream() {
 			return
 		}
 	}
+}
+
+// applyDLP scans a downstream JSON-RPC response for sensitive data and redacts.
+//
+// The function handles MCP tool call responses which have this structure:
+//
+//	{
+//	  "jsonrpc": "2.0",
+//	  "id": 1,
+//	  "result": {
+//	    "content": [
+//	      {"type": "text", "text": "...potentially sensitive data..."}
+//	    ]
+//	  }
+//	}
+//
+// We scan and redact the "text" fields within content items.
+//
+// If the input is not valid JSON or not a response with result, we return
+// it unchanged to avoid breaking the stream.
+func (p *Proxy) applyDLP(line []byte) []byte {
+	// First, try to parse as generic JSON to check structure
+	var msg map[string]json.RawMessage
+	if err := json.Unmarshal(line, &msg); err != nil {
+		// Not valid JSON - pass through unchanged (might be log output)
+		if p.cfg.Verbose {
+			p.logger.Printf("DLP: Non-JSON output, passing through")
+		}
+		return line
+	}
+
+	// Check if this is a JSON-RPC response with a result field
+	resultRaw, hasResult := msg["result"]
+	if !hasResult {
+		// No result field - might be an error response or notification, pass through
+		return line
+	}
+
+	// Try to parse the result to find content
+	var result struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+
+	if err := json.Unmarshal(resultRaw, &result); err != nil {
+		// Result is not in expected format - try full-string scan as fallback
+		return p.applyDLPFullScan(line)
+	}
+
+	// No content array - try full-string scan
+	if len(result.Content) == 0 {
+		return p.applyDLPFullScan(line)
+	}
+
+	// Scan each text field for sensitive data
+	anyRedacted := false
+	var allEvents []dlp.RedactionEvent
+
+	for i := range result.Content {
+		if result.Content[i].Type == "text" || result.Content[i].Text != "" {
+			redacted, events := p.dlpScanner.Redact(result.Content[i].Text)
+			if len(events) > 0 {
+				anyRedacted = true
+				allEvents = append(allEvents, events...)
+				result.Content[i].Text = redacted
+			}
+		}
+	}
+
+	if !anyRedacted {
+		// No redactions needed - return original line
+		return line
+	}
+
+	// Log DLP events
+	for _, event := range allEvents {
+		p.logger.Printf("DLP_TRIGGERED: Rule %q matched %d time(s), redacted",
+			event.RuleName, event.MatchCount)
+		p.auditLogger.LogDLPEvent(event.RuleName, event.MatchCount)
+	}
+
+	// Reconstruct the JSON-RPC response with redacted content
+	return p.reconstructResponse(line, result.Content)
+}
+
+// applyDLPFullScan performs string-level DLP scan on the entire JSON line.
+// Used as a fallback when the response doesn't match expected MCP structure.
+func (p *Proxy) applyDLPFullScan(line []byte) []byte {
+	redacted, events := p.dlpScanner.Redact(string(line))
+	if len(events) == 0 {
+		return line
+	}
+
+	// Log DLP events
+	for _, event := range events {
+		p.logger.Printf("DLP_TRIGGERED (full-scan): Rule %q matched %d time(s), redacted",
+			event.RuleName, event.MatchCount)
+		p.auditLogger.LogDLPEvent(event.RuleName, event.MatchCount)
+	}
+
+	// Ensure we maintain the newline delimiter
+	output := []byte(redacted)
+	if len(output) > 0 && output[len(output)-1] != '\n' {
+		output = append(output, '\n')
+	}
+	return output
+}
+
+// reconstructResponse rebuilds the JSON-RPC response with redacted content.
+func (p *Proxy) reconstructResponse(originalLine []byte, redactedContent []struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}) []byte {
+	// Parse the original message to preserve all fields
+	var msg map[string]json.RawMessage
+	if err := json.Unmarshal(originalLine, &msg); err != nil {
+		// Should not happen since we already validated, but be safe
+		return originalLine
+	}
+
+	// Parse and update the result
+	var result map[string]json.RawMessage
+	if err := json.Unmarshal(msg["result"], &result); err != nil {
+		return originalLine
+	}
+
+	// Re-encode the redacted content
+	contentJSON, err := json.Marshal(redactedContent)
+	if err != nil {
+		return originalLine
+	}
+	result["content"] = contentJSON
+
+	// Re-encode the result
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		return originalLine
+	}
+	msg["result"] = resultJSON
+
+	// Re-encode the full message
+	outputJSON, err := json.Marshal(msg)
+	if err != nil {
+		return originalLine
+	}
+
+	// Append newline delimiter
+	return append(outputJSON, '\n')
 }
 
 // -----------------------------------------------------------------------------
