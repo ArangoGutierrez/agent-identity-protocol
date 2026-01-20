@@ -28,6 +28,7 @@ spec:
   #   - Understanding agent behavior in production
   #   - Gradual policy rollout
   mode: enforce
+
   # Tools that this agent is allowed to invoke.
   # Any tool not in this list will be blocked with a -32001 Forbidden error.
   #
@@ -57,3 +58,41 @@ spec:
     # - postgres_query          # Database access
     # - slack_post_message      # External communication
     # - exec_command            # Arbitrary code execution
+
+  # Tool Rules: Fine-grained control per tool
+  #
+  # Each rule can specify:
+  #   - action: "allow" (default), "block", or "ask"
+  #   - allow_args: Regex patterns for argument validation
+  #
+  # Action types:
+  #   - "allow": Permit the tool call (subject to arg validation)
+  #   - "block": Deny the tool call unconditionally
+  #   - "ask":   Prompt user via native OS dialog for approval (Human-in-the-Loop)
+  #
+  # The "ask" action spawns a native dialog box asking the user to
+  # Approve or Deny. If the user doesn't respond within 60 seconds,
+  # the request is auto-denied (fail-closed behavior).
+  tool_rules:
+    # Example: Dangerous tool requires explicit user approval
+    - tool: dangerous_tool
+      action: ask
+
+    # Example: Shell execution requires approval AND argument validation
+    - tool: exec_command
+      action: ask
+      allow_args:
+        command: "^(ls|cat|echo|pwd)\\s.*"  # Only safe read-only commands
+
+    # Example: Database queries allowed but only SELECT statements
+    - tool: postgres_query
+      action: allow
+      allow_args:
+        query: "^SELECT\\s+.*"
+
+    # Example: Explicitly block destructive operations
+    - tool: github_delete_repo
+      action: block
+
+    - tool: drop_table
+      action: block
