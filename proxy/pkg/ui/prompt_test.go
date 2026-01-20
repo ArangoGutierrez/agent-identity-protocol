@@ -3,9 +3,16 @@ package ui
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 )
+
+// isCI returns true if running in a CI environment.
+func isCI() bool {
+	// GitHub Actions, GitLab CI, CircleCI, Travis, etc. all set CI=true
+	return os.Getenv("CI") == "true" || os.Getenv("CI") == "1"
+}
 
 // TestNewPrompterDefaults tests that NewPrompter uses default values correctly.
 func TestNewPrompterDefaults(t *testing.T) {
@@ -80,6 +87,10 @@ func TestBuildMessage(t *testing.T) {
 
 // TestAskUserContextCancellation tests that context cancellation returns false.
 func TestAskUserContextCancellation(t *testing.T) {
+	if isCI() {
+		t.Skip("Skipping interactive test in CI environment")
+	}
+
 	p := NewPrompter(&PrompterConfig{
 		Timeout: 10 * time.Second, // Long timeout to ensure context cancels first
 	})
@@ -104,6 +115,10 @@ func TestAskUserContextCancellation(t *testing.T) {
 
 // TestAskUserContextTimeout tests that timeout returns false.
 func TestAskUserContextTimeout(t *testing.T) {
+	if isCI() {
+		t.Skip("Skipping interactive test in CI environment")
+	}
+
 	p := NewPrompter(&PrompterConfig{
 		Timeout: 100 * time.Millisecond, // Very short timeout
 	})
