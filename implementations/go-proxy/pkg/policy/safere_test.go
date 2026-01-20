@@ -58,7 +58,7 @@ func TestSafeCompile_Timeout(t *testing.T) {
 	// Test with very short timeout - even simple patterns might timeout
 	// This tests the timeout mechanism, not actual ReDoS
 	pattern := `^simple$`
-	
+
 	// Should succeed with reasonable timeout
 	re, err := SafeCompile(pattern, 100*time.Millisecond)
 	if err != nil {

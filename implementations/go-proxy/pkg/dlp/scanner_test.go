@@ -356,10 +356,10 @@ func TestRedactDeep_NestedMaps(t *testing.T) {
 	}
 
 	tests := []struct {
-		name       string
-		input      any
-		wantRules  []string
-		checkFunc  func(t *testing.T, result any)
+		name      string
+		input     any
+		wantRules []string
+		checkFunc func(t *testing.T, result any)
 	}{
 		{
 			name: "single level map with secret",

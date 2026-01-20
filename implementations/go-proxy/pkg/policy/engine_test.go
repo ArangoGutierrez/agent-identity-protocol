@@ -1634,11 +1634,11 @@ spec:
 		method  string
 		allowed bool
 	}{
-		{"tools/call", true},    // Explicitly allowed
+		{"tools/call", true},     // Explicitly allowed
 		{"resources/read", true}, // Explicitly allowed (normally blocked)
-		{"tools/list", false},   // NOT in explicit list
-		{"ping", false},         // NOT in explicit list
-		{"prompts/get", false},  // NOT in explicit list
+		{"tools/list", false},    // NOT in explicit list
+		{"ping", false},          // NOT in explicit list
+		{"prompts/get", false},   // NOT in explicit list
 	}
 
 	for _, tt := range tests {
@@ -1678,11 +1678,11 @@ spec:
 		method  string
 		allowed bool
 	}{
-		{"tools/call", true},      // Allowed by wildcard
-		{"prompts/get", true},     // Allowed by wildcard
-		{"resources/read", false}, // Explicitly denied (deny wins)
+		{"tools/call", true},       // Allowed by wildcard
+		{"prompts/get", true},      // Allowed by wildcard
+		{"resources/read", false},  // Explicitly denied (deny wins)
 		{"resources/write", false}, // Explicitly denied
-		{"resources/list", true},  // Not denied, allowed by wildcard
+		{"resources/list", true},   // Not denied, allowed by wildcard
 	}
 
 	for _, tt := range tests {

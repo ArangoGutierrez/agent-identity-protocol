@@ -426,7 +426,7 @@ func NewProxy(ctx context.Context, cfg *Config, engine *policy.Engine, logger *l
 
 	// Initialize the user prompter for Human-in-the-Loop approval
 	// Check for headless environment and log a warning
-	prompter := ui.NewPrompter(nil) // Use default config (60s timeout, rate limiting)
+	prompter := ui.NewPrompter(nil)   // Use default config (60s timeout, rate limiting)
 	prompter.SetLogger(logger.Printf) // Enable rate limit warnings
 	if ui.IsHeadless() {
 		logger.Printf("Warning: Running in headless environment; action=ask rules will auto-deny")
