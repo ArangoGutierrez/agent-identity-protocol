@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-01-20
+
 ### Added
 - Comprehensive documentation (architecture, policy reference, integration guide)
 - GitHub Actions CI/CD workflows
@@ -17,13 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GitHub Copilot instructions for AI-assisted development
 - CODEOWNERS file for code review routing
 - Labels script for GitHub project management
-
-### Changed
 - Enhanced README with "Sudo for AI" demonstration
-
-## [0.1.0] - 2026-01-20
-
-### Added
 - **AIP Proxy**: Core policy enforcement proxy for MCP servers
   - stdin/stdout passthrough for JSON-RPC messages
   - Tool call interception and policy evaluation

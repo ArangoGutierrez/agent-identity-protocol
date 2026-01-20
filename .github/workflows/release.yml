@@ -44,7 +44,7 @@ jobs:
           distribution: goreleaser
           version: "~> v2"
           args: release --clean
-          workdir: proxy
+          workdir: implementations/go-proxy
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

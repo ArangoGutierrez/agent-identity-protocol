@@ -9,6 +9,7 @@
   <a href="https://github.com/ArangoGutierrez/agent-identity-protocol/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/ArangoGutierrez/agent-identity-protocol/ci.yml?label=Build&logo=github" alt="Build: Passing"></a>
   <a href="https://securityscorecards.dev/viewer/?uri=github.com/ArangoGutierrez/agent-identity-protocol"><img src="https://img.shields.io/badge/Security-Hardened-success?logo=shield" alt="Security: Hardened"></a>
   <a href="https://twitter.com/ArangoGutworker"><img src="https://img.shields.io/twitter/follow/ArangoGutworker?style=social&logo=x" alt="Follow @ArangoGutworker"></a>
+  <a href="https://news.ycombinator.com/item?id=46695323"><img src="https://img.shields.io/ycombinator/comments/46695323?label=Hacker%20News&style=flat-square" alt="Hacker News"></a>
 </p>
 
 ---
