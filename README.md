@@ -368,6 +368,32 @@ make build
 | `--verbose` | Enable detailed logging | `false` |
 | `--generate-cursor-config` | Output Cursor IDE config JSON | `false` |
 
+### Known Limitations
+
+#### Signal Propagation to Subprocess
+
+When AIP receives `SIGTERM` or `SIGINT` (e.g., Ctrl+C), it forwards the signal to the subprocess. However, **signals may not propagate correctly in all scenarios**:
+
+| Scenario | Behavior | Workaround |
+|----------|----------|------------|
+| Direct binary (`python server.py`) | ✅ Signal propagates correctly | None needed |
+| Shell wrapper (`sh -c "python ..."`) | ⚠️ Signal may kill shell only | Avoid shell wrappers |
+| Docker container (`docker run ...`) | ⚠️ Container may orphan | Use `--rm` and `--init` flags |
+
+**Docker Best Practices:**
+
+```bash
+# GOOD: Container dies with proxy
+aip --target "docker run --rm --init -i mcp-server:latest" --policy policy.yaml
+
+# BAD: Container may orphan
+aip --target "docker run mcp-server:latest" --policy policy.yaml
+```
+
+The `--rm` flag removes the container on exit, and `--init` ensures signals propagate to the container's PID 1.
+
+See `examples/docker-wrapper.yaml` for a complete Docker policy example.
+
 ---
 
 ## The "Sudo for AI" Demo
