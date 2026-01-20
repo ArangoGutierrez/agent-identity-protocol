@@ -54,6 +54,7 @@ import (
 	"github.com/ArangoGutierrez/agent-identity-protocol/proxy/pkg/audit"
 	"github.com/ArangoGutierrez/agent-identity-protocol/proxy/pkg/policy"
 	"github.com/ArangoGutierrez/agent-identity-protocol/proxy/pkg/protocol"
+	"github.com/ArangoGutierrez/agent-identity-protocol/proxy/pkg/ui"
 )
 
 // -----------------------------------------------------------------------------
@@ -182,14 +183,16 @@ func main() {
 //  2. Intercepts messages flowing from client (stdin) to server (subprocess)
 //  3. Applies policy checks to tool/call requests
 //  4. Passes through allowed requests, blocks forbidden ones
-//  5. Forwards responses from server to client unchanged
-//  6. Logs all decisions to the audit log file (NEVER stdout)
+//  5. Prompts user for approval on action="ask" rules (Human-in-the-Loop)
+//  6. Forwards responses from server to client unchanged
+//  7. Logs all decisions to the audit log file (NEVER stdout)
 type Proxy struct {
 	ctx         context.Context
 	cfg         *Config
 	engine      *policy.Engine
 	logger      *log.Logger
 	auditLogger *audit.Logger
+	prompter    *ui.Prompter
 
 	// cmd is the subprocess running the target MCP server
 	cmd *exec.Cmd
@@ -213,7 +216,8 @@ type Proxy struct {
 // This function:
 //  1. Parses the target command into executable and arguments
 //  2. Creates the subprocess with piped stdin/stdout
-//  3. Starts the subprocess
+//  3. Initializes the user prompter for Human-in-the-Loop approval
+//  4. Starts the subprocess
 //
 // The subprocess inherits our stderr for error output visibility.
 // The auditLogger is used to record all policy decisions to a file.
@@ -242,6 +246,13 @@ func NewProxy(ctx context.Context, cfg *Config, engine *policy.Engine, logger *l
 	// Subprocess stderr goes to our stderr for visibility
 	cmd.Stderr = os.Stderr
 
+	// Initialize the user prompter for Human-in-the-Loop approval
+	// Check for headless environment and log a warning
+	prompter := ui.NewPrompter(nil) // Use default config (60s timeout)
+	if ui.IsHeadless() {
+		logger.Printf("Warning: Running in headless environment; action=ask rules will auto-deny")
+	}
+
 	// Start the subprocess
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start subprocess: %w", err)
@@ -255,6 +266,7 @@ func NewProxy(ctx context.Context, cfg *Config, engine *policy.Engine, logger *l
 		engine:      engine,
 		logger:      logger,
 		auditLogger: auditLogger,
+		prompter:    prompter,
 		cmd:         cmd,
 		subStdin:    subStdin,
 		subStdout:   subStdout,
@@ -416,49 +428,85 @@ func (p *Proxy) handleUpstream() {
 
 			decision := p.engine.IsAllowed(toolName, toolArgs)
 
-			// Determine audit decision type for logging
-			var auditDecision audit.Decision
-			if !decision.ViolationDetected {
-				auditDecision = audit.DecisionAllow
-			} else if decision.Allowed {
-				// Violation detected but allowed through = monitor mode
-				auditDecision = audit.DecisionAllowMonitor
-			} else {
-				auditDecision = audit.DecisionBlock
-			}
+			// Handle Human-in-the-Loop (ASK) action first
+			if decision.Action == policy.ActionAsk {
+				p.logger.Printf("ASK: Requesting user approval for tool %q...", toolName)
 
-			// Log to audit file (NEVER to stdout)
-			p.auditLogger.LogToolCall(
-				toolName,
-				toolArgs,
-				auditDecision,
-				decision.ViolationDetected,
-				decision.FailedArg,
-				decision.FailedRule,
-			)
+				// Prompt user via native OS dialog
+				approved := p.prompter.AskUserContext(p.ctx, toolName, toolArgs)
 
-			// Handle the decision based on mode
-			if !decision.Allowed {
-				// BLOCKED (enforce mode with violation)
-				if decision.FailedArg != "" {
-					p.logger.Printf("BLOCKED: Tool %q argument %q failed validation (pattern: %s)",
-						toolName, decision.FailedArg, decision.FailedRule)
-					p.sendErrorResponse(protocol.NewArgumentError(req.ID, toolName, decision.FailedArg, decision.FailedRule))
+				// Log the user's decision
+				if approved {
+					p.logger.Printf("ASK_APPROVED: User approved tool %q", toolName)
+					p.auditLogger.LogToolCall(
+						toolName,
+						toolArgs,
+						audit.DecisionAllow,
+						false, // Not a violation - user explicitly approved
+						"",
+						"",
+					)
+					// Fall through to forward the request
 				} else {
-					p.logger.Printf("BLOCKED: Tool %q not allowed by policy", toolName)
-					p.sendErrorResponse(protocol.NewForbiddenError(req.ID, toolName))
+					p.logger.Printf("ASK_DENIED: User denied tool %q (or timeout)", toolName)
+					p.auditLogger.LogToolCall(
+						toolName,
+						toolArgs,
+						audit.DecisionBlock,
+						true, // Treat as violation for audit purposes
+						"",
+						"",
+					)
+					p.sendErrorResponse(protocol.NewUserDeniedError(req.ID, toolName))
+					continue // Do not forward to subprocess
 				}
-				continue // Do not forward to subprocess
-			}
-
-			// Request is allowed (either no violation, or monitor mode)
-			if decision.ViolationDetected {
-				// MONITOR MODE: Violation detected but allowing through (dry run)
-				p.logger.Printf("ALLOW_MONITOR (dry-run): Tool %q would be blocked, reason: %s",
-					toolName, decision.Reason)
 			} else {
-				// Clean allow, no violation
-				p.logger.Printf("ALLOWED: Tool %q permitted by policy", toolName)
+				// Standard policy decision (not ASK)
+
+				// Determine audit decision type for logging
+				var auditDecision audit.Decision
+				if !decision.ViolationDetected {
+					auditDecision = audit.DecisionAllow
+				} else if decision.Allowed {
+					// Violation detected but allowed through = monitor mode
+					auditDecision = audit.DecisionAllowMonitor
+				} else {
+					auditDecision = audit.DecisionBlock
+				}
+
+				// Log to audit file (NEVER to stdout)
+				p.auditLogger.LogToolCall(
+					toolName,
+					toolArgs,
+					auditDecision,
+					decision.ViolationDetected,
+					decision.FailedArg,
+					decision.FailedRule,
+				)
+
+				// Handle the decision based on mode
+				if !decision.Allowed {
+					// BLOCKED (enforce mode with violation)
+					if decision.FailedArg != "" {
+						p.logger.Printf("BLOCKED: Tool %q argument %q failed validation (pattern: %s)",
+							toolName, decision.FailedArg, decision.FailedRule)
+						p.sendErrorResponse(protocol.NewArgumentError(req.ID, toolName, decision.FailedArg, decision.FailedRule))
+					} else {
+						p.logger.Printf("BLOCKED: Tool %q not allowed by policy", toolName)
+						p.sendErrorResponse(protocol.NewForbiddenError(req.ID, toolName))
+					}
+					continue // Do not forward to subprocess
+				}
+
+				// Request is allowed (either no violation, or monitor mode)
+				if decision.ViolationDetected {
+					// MONITOR MODE: Violation detected but allowing through (dry run)
+					p.logger.Printf("ALLOW_MONITOR (dry-run): Tool %q would be blocked, reason: %s",
+						toolName, decision.Reason)
+				} else {
+					// Clean allow, no violation
+					p.logger.Printf("ALLOWED: Tool %q permitted by policy", toolName)
+				}
 			}
 		}
 
