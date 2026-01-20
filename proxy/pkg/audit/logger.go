@@ -40,6 +40,8 @@ const (
 	DecisionAllowMonitor Decision = "ALLOW_MONITOR"
 	// DecisionRateLimited - Request denied due to rate limit exceeded
 	DecisionRateLimited Decision = "RATE_LIMITED"
+	// DecisionDLPRedacted - Response contained sensitive data that was redacted
+	DecisionDLPRedacted Decision = "DLP_TRIGGERED"
 )
 
 // PolicyMode represents the enforcement mode of the policy.
@@ -254,6 +256,37 @@ func (l *Logger) LogToolCall(tool string, args map[string]any, decision Decision
 		FailedArg:  failedArg,
 		FailedRule: failedRule,
 	})
+}
+
+// LogDLPEvent logs a DLP redaction event.
+//
+// Called when the downstream response contains sensitive data that was redacted.
+// Each DLP rule that triggered a match generates a separate log entry.
+//
+// Example JSON output:
+//
+//	{
+//	  "timestamp": "2025-01-20T10:30:45.123Z",
+//	  "direction": "downstream",
+//	  "event": "DLP_TRIGGERED",
+//	  "dlp_rule": "AWS Key",
+//	  "dlp_action": "REDACTED",
+//	  "dlp_match_count": 2
+//	}
+func (l *Logger) LogDLPEvent(ruleName string, matchCount int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	attrs := []slog.Attr{
+		slog.Time("timestamp", time.Now().UTC()),
+		slog.String("direction", string(DirectionDownstream)),
+		slog.String("event", "DLP_TRIGGERED"),
+		slog.String("dlp_rule", ruleName),
+		slog.String("dlp_action", "REDACTED"),
+		slog.Int("dlp_match_count", matchCount),
+	}
+
+	l.slogger.LogAttrs(context.Background(), slog.LevelWarn, "dlp", attrs...)
 }
 
 // SetMode updates the policy mode for subsequent log entries.
