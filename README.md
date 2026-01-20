@@ -263,7 +263,7 @@ Every tool call is logged with full context for forensic analysis:
 ## Roadmap
 
 - [x] **Specification v0.1**: Core manifest schema and policy semantics
-- [ ] **v0.1: Local Proxy** — Single-binary proxy for local development
+- [x] **v0.1: Local Proxy** — Single-binary proxy for local development
 - [ ] **v0.2: Kubernetes Sidecar** — Inject AIP as a sidecar container
 - [ ] **v0.3: MCP Integration** — Native MCP transport with AIP policy layer
 - [ ] **v0.4: Multi-Agent Support** — Agent-to-agent authentication and delegation
@@ -300,21 +300,24 @@ agent-identity-protocol/
 
 ## Getting Started
 
-*Coming soon in v0.1*
-
 ```bash
-# Install the AIP proxy
-go install github.com/ArangoGutierrez/agent-identity-protocol/proxy/cmd/aip-proxy@latest
+# Build the proxy
+cd proxy
+go build -o aip-proxy ./cmd/aip-proxy
 
-# Initialize a manifest for your agent
-aip-proxy init --name my-agent > agent.yaml
-
-# Run the proxy (intercepts MCP traffic)
-aip-proxy serve --manifest agent.yaml --listen :8080
-
-# Point your agent at the proxy
-export MCP_ENDPOINT=http://localhost:8080
+# Run with a policy file and target MCP server
+./aip-proxy --policy agent.yaml --target "python3 mcp_server.py"
 ```
+
+**See the full walkthrough:** [Quickstart Guide](docs/quickstart.md) — includes a working test with a dummy MCP server.
+
+### CLI Flags
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--target` | Command to run as MCP server (required) | — |
+| `--policy` | Path to agent.yaml policy file | `agent.yaml` |
+| `--verbose` | Enable detailed logging | `false` |
 
 ---
 
