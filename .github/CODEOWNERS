@@ -1,0 +1,26 @@
+# CODEOWNERS for Agent Identity Protocol
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owner for everything
+* @ArangoGutierrez
+
+# Core proxy implementation
+/proxy/cmd/ @ArangoGutierrez
+/proxy/pkg/ @ArangoGutierrez
+
+# Policy engine (security-critical)
+/proxy/pkg/policy/ @ArangoGutierrez
+
+# DLP scanner (security-critical)
+/proxy/pkg/dlp/ @ArangoGutierrez
+
+# Security documentation
+/SECURITY.md @ArangoGutierrez
+/.github/SECURITY/ @ArangoGutierrez
+
+# CI/CD configuration
+/.github/workflows/ @ArangoGutierrez
+
+# Documentation
+/docs/ @ArangoGutierrez
+/README.md @ArangoGutierrez
