@@ -22,6 +22,9 @@ go.work.sum
 /build/
 /out/
 
+# AIP proxy binary
+proxy/aip-proxy
+
 # Dependency directories
 /vendor/
 
