@@ -91,11 +91,12 @@ jobs:
             exit 1
           fi
 
-      - name: Run staticcheck
-        uses: dominikh/staticcheck-action@v1
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v6
         with:
-          version: "latest"
+          version: latest
           working-directory: proxy
+          args: --timeout=5m
 
   security:
     name: Security Scan
@@ -115,8 +116,3 @@ jobs:
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
-
-      - name: Run gosec
-        uses: securego/gosec@master
-        with:
-          args: -exclude-dir=test ./proxy/...
