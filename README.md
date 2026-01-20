@@ -3,6 +3,7 @@
 **"Sudo for AI Agents" — The Zero-Trust Security Layer for Autonomous Agents**
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Security Policy](https://img.shields.io/badge/Security-Policy-red.svg)](SECURITY.md)
 [![Go Version](https://img.shields.io/badge/Go-1.23+-00ADD8?logo=go)](https://go.dev/)
 [![CI](https://github.com/ArangoGutierrez/agent-identity-protocol/actions/workflows/ci.yml/badge.svg)](https://github.com/ArangoGutierrez/agent-identity-protocol/actions/workflows/ci.yml)
 [![Status](https://img.shields.io/badge/Status-Alpha-orange.svg)]()
@@ -103,7 +104,7 @@ Every agent declares its **capabilities and constraints** in a manifest. This is
 ```yaml
 # agent.yaml - Declarative policy for a code review agent
 apiVersion: aip.io/v1alpha1
-kind: AgentManifest
+kind: AgentPolicy
 metadata:
   name: code-review-agent
   version: 1.0.0
