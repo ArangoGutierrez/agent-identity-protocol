@@ -6,6 +6,9 @@
 #
 # Usage:
 #   aip-proxy --target "python mcp_server.py" --policy examples/agent.yaml
+#
+# For monitor mode (dry-run), set spec.mode: monitor
+# This logs violations but allows requests through for testing policies.
 
 apiVersion: aip.io/v1alpha1
 kind: AgentPolicy
@@ -16,6 +19,15 @@ metadata:
   owner: platform-team@company.com
 
 spec:
+  # Policy enforcement mode:
+  #   - "enforce" (default): Block violations, return error to client
+  #   - "monitor": Log violations but allow through (dry-run mode)
+  #
+  # Monitor mode is useful for:
+  #   - Testing new policies before enforcement
+  #   - Understanding agent behavior in production
+  #   - Gradual policy rollout
+  mode: enforce
   # Tools that this agent is allowed to invoke.
   # Any tool not in this list will be blocked with a -32001 Forbidden error.
   #
