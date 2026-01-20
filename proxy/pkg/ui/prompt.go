@@ -144,7 +144,7 @@ func (p *Prompter) AskUserContext(ctx context.Context, tool string, args map[str
 func (p *Prompter) buildMessage(tool string, args map[string]any) string {
 	// Format arguments as JSON for display
 	argsJSON := "{}"
-	if args != nil && len(args) > 0 {
+	if len(args) > 0 {
 		if data, err := json.MarshalIndent(args, "", "  "); err == nil {
 			argsJSON = string(data)
 		}

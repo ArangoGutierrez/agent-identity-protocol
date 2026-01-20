@@ -21,7 +21,7 @@ func TestNewLoggerCreatesFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLogger() error = %v", err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	// Verify file was created
 	if _, err := os.Stat(logPath); os.IsNotExist(err) {

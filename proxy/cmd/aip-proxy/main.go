@@ -202,7 +202,7 @@ func main() {
 	if err != nil {
 		logger.Fatalf("Failed to initialize audit logger: %v", err)
 	}
-	defer auditLogger.Close()
+	defer func() { _ = auditLogger.Close() }()
 	logger.Printf("Audit logging to: %s", cfg.AuditPath)
 
 	// Create context for graceful shutdown
@@ -689,7 +689,7 @@ func (p *Proxy) reconstructResponse(originalLine []byte, redactedContent []struc
 //   - NEVER use fmt.Println, log.Println, or similar that write to stdout
 func (p *Proxy) handleUpstream() {
 	defer p.wg.Done()
-	defer p.subStdin.Close() // Close subprocess stdin when we're done
+	defer func() { _ = p.subStdin.Close() }() // Close subprocess stdin when we're done
 
 	reader := bufio.NewReader(os.Stdin)
 

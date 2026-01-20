@@ -176,7 +176,7 @@ spec:
 
 	// Log the block
 	auditLogger.LogToolCall("dangerous_tool", nil, audit.DecisionBlock, true, "", "")
-	auditLogger.Close()
+	_ = auditLogger.Close()
 
 	// Verify audit log
 	data, err := os.ReadFile(auditPath)
@@ -264,7 +264,7 @@ func TestAuditLogFormat(t *testing.T) {
 		ErrorReason: "path outside allowed directory",
 	})
 
-	logger.Close()
+	_ = logger.Close()
 
 	// Read and verify all fields
 	data, err := os.ReadFile(auditPath)
