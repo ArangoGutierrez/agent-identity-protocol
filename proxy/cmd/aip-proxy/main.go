@@ -51,6 +51,7 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/ArangoGutierrez/agent-identity-protocol/proxy/pkg/audit"
 	"github.com/ArangoGutierrez/agent-identity-protocol/proxy/pkg/policy"
 	"github.com/ArangoGutierrez/agent-identity-protocol/proxy/pkg/protocol"
 )
@@ -68,6 +69,11 @@ type Config struct {
 	// PolicyPath is the path to the agent.yaml policy file.
 	PolicyPath string
 
+	// AuditPath is the path to the audit log file.
+	// Default: "aip-audit.jsonl" in current directory.
+	// CRITICAL: Must NOT be stdout or any path that writes to stdout.
+	AuditPath string
+
 	// Verbose enables detailed logging of intercepted messages.
 	Verbose bool
 }
@@ -77,6 +83,7 @@ func parseFlags() *Config {
 
 	flag.StringVar(&cfg.Target, "target", "", "Command to run as MCP server (required)")
 	flag.StringVar(&cfg.PolicyPath, "policy", "agent.yaml", "Path to policy file")
+	flag.StringVar(&cfg.AuditPath, "audit", "aip-audit.jsonl", "Path to audit log file (MUST NOT be stdout)")
 	flag.BoolVar(&cfg.Verbose, "verbose", false, "Enable verbose logging")
 
 	flag.Parse()
@@ -97,8 +104,14 @@ func parseFlags() *Config {
 func main() {
 	cfg := parseFlags()
 
-	// Initialize logging
-	// Log to stderr so stdout is clean for JSON-RPC messages
+	// CRITICAL STREAM SAFETY:
+	// - stdout is RESERVED for JSON-RPC transport (client ↔ server)
+	// - stderr is used for operational logs (via log.Logger)
+	// - audit logs go to a FILE (via audit.Logger)
+	// NEVER write logs to stdout - it corrupts the JSON-RPC stream
+
+	// Initialize operational logging to stderr
+	// stderr is safe because it doesn't interfere with JSON-RPC on stdout
 	logger := log.New(os.Stderr, "[aip-proxy] ", log.LstdFlags|log.Lmsgprefix)
 
 	// Load the policy file
@@ -108,6 +121,22 @@ func main() {
 	}
 	logger.Printf("Loaded policy: %s", engine.GetPolicyName())
 	logger.Printf("Allowed tools: %v", engine.GetAllowedTools())
+	logger.Printf("Policy mode: %s", engine.GetMode())
+
+	// Initialize audit logger (writes to file, NEVER stdout)
+	auditMode := audit.PolicyModeEnforce
+	if engine.IsMonitorMode() {
+		auditMode = audit.PolicyModeMonitor
+	}
+	auditLogger, err := audit.NewLogger(&audit.Config{
+		FilePath: cfg.AuditPath,
+		Mode:     auditMode,
+	})
+	if err != nil {
+		logger.Fatalf("Failed to initialize audit logger: %v", err)
+	}
+	defer auditLogger.Close()
+	logger.Printf("Audit logging to: %s", cfg.AuditPath)
 
 	// Create context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
@@ -118,7 +147,7 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
 
 	// Start the subprocess
-	proxy, err := NewProxy(ctx, cfg, engine, logger)
+	proxy, err := NewProxy(ctx, cfg, engine, logger, auditLogger)
 	if err != nil {
 		logger.Fatalf("Failed to start proxy: %v", err)
 	}
@@ -133,6 +162,12 @@ func main() {
 
 	// Run the proxy (blocks until subprocess exits)
 	exitCode := proxy.Run()
+
+	// Ensure audit logs are flushed before exit
+	if err := auditLogger.Sync(); err != nil {
+		logger.Printf("Warning: failed to sync audit log: %v", err)
+	}
+
 	os.Exit(exitCode)
 }
 
@@ -148,11 +183,13 @@ func main() {
 //  3. Applies policy checks to tool/call requests
 //  4. Passes through allowed requests, blocks forbidden ones
 //  5. Forwards responses from server to client unchanged
+//  6. Logs all decisions to the audit log file (NEVER stdout)
 type Proxy struct {
-	ctx    context.Context
-	cfg    *Config
-	engine *policy.Engine
-	logger *log.Logger
+	ctx         context.Context
+	cfg         *Config
+	engine      *policy.Engine
+	logger      *log.Logger
+	auditLogger *audit.Logger
 
 	// cmd is the subprocess running the target MCP server
 	cmd *exec.Cmd
@@ -167,6 +204,7 @@ type Proxy struct {
 	wg sync.WaitGroup
 
 	// mu protects concurrent writes to stdout
+	// CRITICAL: Only JSON-RPC responses go to stdout, never logs
 	mu sync.Mutex
 }
 
@@ -178,7 +216,8 @@ type Proxy struct {
 //  3. Starts the subprocess
 //
 // The subprocess inherits our stderr for error output visibility.
-func NewProxy(ctx context.Context, cfg *Config, engine *policy.Engine, logger *log.Logger) (*Proxy, error) {
+// The auditLogger is used to record all policy decisions to a file.
+func NewProxy(ctx context.Context, cfg *Config, engine *policy.Engine, logger *log.Logger, auditLogger *audit.Logger) (*Proxy, error) {
 	// Parse the target command
 	// Simple space-split; doesn't handle quoted args (use shell wrapper if needed)
 	parts := strings.Fields(cfg.Target)
@@ -211,13 +250,14 @@ func NewProxy(ctx context.Context, cfg *Config, engine *policy.Engine, logger *l
 	logger.Printf("Started subprocess PID %d: %s", cmd.Process.Pid, cfg.Target)
 
 	return &Proxy{
-		ctx:       ctx,
-		cfg:       cfg,
-		engine:    engine,
-		logger:    logger,
-		cmd:       cmd,
-		subStdin:  subStdin,
-		subStdout: subStdout,
+		ctx:         ctx,
+		cfg:         cfg,
+		engine:      engine,
+		logger:      logger,
+		auditLogger: auditLogger,
+		cmd:         cmd,
+		subStdin:    subStdin,
+		subStdout:   subStdout,
 	}, nil
 }
 
@@ -320,16 +360,18 @@ func (p *Proxy) handleDownstream() {
 //  2. Decode the message to inspect the method
 //  3. If method is "tools/call":
 //     a. Extract the tool name from params
-//     b. Check engine.IsAllowed(toolName)
-//     c. If ALLOWED: forward to subprocess stdin
-//     d. If BLOCKED: return JSON-RPC error to our stdout
+//     b. Check engine.IsAllowed(toolName, args)
+//     c. Log the decision to audit file (NEVER stdout)
+//     d. If mode=ENFORCE AND violation: BLOCK (return error to stdout)
+//     e. If mode=MONITOR AND violation: ALLOW (forward) but log as dry-run block
+//     f. If no violation: ALLOW (forward)
 //  4. For other methods: passthrough to subprocess
 //
-// This approach ensures that:
-//   - ALL tool calls are policy-checked before reaching the server
-//   - Blocked calls never touch the actual tool (fail-safe)
-//   - The client receives a proper JSON-RPC error for blocked calls
-//   - Non-tool calls (init, ping, etc.) flow through normally
+// CRITICAL STDOUT SAFETY:
+//   - ONLY JSON-RPC messages go to stdout (responses to client)
+//   - Audit logs go to FILE via auditLogger
+//   - Operational logs go to stderr via logger
+//   - NEVER use fmt.Println, log.Println, or similar that write to stdout
 func (p *Proxy) handleUpstream() {
 	defer p.wg.Done()
 	defer p.subStdin.Close() // Close subprocess stdin when we're done
@@ -372,23 +414,52 @@ func (p *Proxy) handleUpstream() {
 			toolArgs := req.GetToolArgs()
 			p.logger.Printf("Tool call intercepted: %s", toolName)
 
-			result := p.engine.IsAllowed(toolName, toolArgs)
-			if !result.Allowed {
-				if result.FailedArg != "" {
-					// BLOCKED: Argument validation failed
+			decision := p.engine.IsAllowed(toolName, toolArgs)
+
+			// Determine audit decision type for logging
+			var auditDecision audit.Decision
+			if !decision.ViolationDetected {
+				auditDecision = audit.DecisionAllow
+			} else if decision.Allowed {
+				// Violation detected but allowed through = monitor mode
+				auditDecision = audit.DecisionAllowMonitor
+			} else {
+				auditDecision = audit.DecisionBlock
+			}
+
+			// Log to audit file (NEVER to stdout)
+			p.auditLogger.LogToolCall(
+				toolName,
+				toolArgs,
+				auditDecision,
+				decision.ViolationDetected,
+				decision.FailedArg,
+				decision.FailedRule,
+			)
+
+			// Handle the decision based on mode
+			if !decision.Allowed {
+				// BLOCKED (enforce mode with violation)
+				if decision.FailedArg != "" {
 					p.logger.Printf("BLOCKED: Tool %q argument %q failed validation (pattern: %s)",
-						toolName, result.FailedArg, result.FailedRule)
-					p.sendErrorResponse(protocol.NewArgumentError(req.ID, toolName, result.FailedArg, result.FailedRule))
+						toolName, decision.FailedArg, decision.FailedRule)
+					p.sendErrorResponse(protocol.NewArgumentError(req.ID, toolName, decision.FailedArg, decision.FailedRule))
 				} else {
-					// BLOCKED: Tool not in allowed list
 					p.logger.Printf("BLOCKED: Tool %q not allowed by policy", toolName)
 					p.sendErrorResponse(protocol.NewForbiddenError(req.ID, toolName))
 				}
 				continue // Do not forward to subprocess
 			}
 
-			// ALLOWED: Tool and arguments are permitted
-			p.logger.Printf("ALLOWED: Tool %q permitted by policy", toolName)
+			// Request is allowed (either no violation, or monitor mode)
+			if decision.ViolationDetected {
+				// MONITOR MODE: Violation detected but allowing through (dry run)
+				p.logger.Printf("ALLOW_MONITOR (dry-run): Tool %q would be blocked, reason: %s",
+					toolName, decision.Reason)
+			} else {
+				// Clean allow, no violation
+				p.logger.Printf("ALLOWED: Tool %q permitted by policy", toolName)
+			}
 		}
 
 		// Forward the message to subprocess stdin
