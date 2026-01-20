@@ -33,6 +33,13 @@ AIP is designed to be implementation-agnostic. Any MCP-compatible runtime (Curso
 8. [Security Considerations](#8-security-considerations)
 9. [IANA Considerations](#9-iana-considerations)
 
+**Appendices**
+- [Appendix A: Complete Schema Reference](#appendix-a-complete-schema-reference)
+- [Appendix B: Changelog](#appendix-b-changelog)
+- [Appendix C: References](#appendix-c-references)
+- [Appendix D: Future Extensions](#appendix-d-future-extensions)
+- [Appendix E: Implementation Notes](#appendix-e-implementation-notes)
+
 ---
 
 ## 1. Introduction
@@ -56,9 +63,9 @@ AIP addresses this gap by introducing:
 
 ### 1.3 Non-Goals
 
-The following are explicitly out of scope for this specification:
-- Network egress control
-- Subprocess sandboxing
+The following are explicitly out of scope for **this version** of the specification:
+- Network egress control (see [Appendix D: Future Extensions](#appendix-d-future-extensions))
+- Subprocess sandboxing (implementation-defined)
 - Identity federation (future specification)
 - Rate limiting algorithms (implementation-defined)
 
@@ -677,3 +684,159 @@ spec:                             # REQUIRED
 - [RFC 2119 - Key words for use in RFCs](https://www.rfc-editor.org/rfc/rfc2119)
 - [Unicode NFKC Normalization](https://unicode.org/reports/tr15/)
 - [RE2 Syntax](https://github.com/google/re2/wiki/Syntax)
+
+---
+
+## Appendix D: Future Extensions
+
+This appendix describes features under consideration for future versions of AIP.
+
+### D.1 Network Egress Control
+
+**Status:** Proposed for v1beta1
+
+#### Motivation
+
+Tool-level authorization prevents agents from calling dangerous tools, but a compromised or malicious MCP server can still exfiltrate data through:
+- Outbound HTTP requests embedded in tool implementations
+- DNS exfiltration
+- Covert channels in allowed network traffic
+
+Egress control would allow policies to restrict which network destinations an MCP server (or its subprocesses) can reach.
+
+#### Proposed Schema Extension
+
+```yaml
+apiVersion: aip.io/v1beta1  # Future version
+kind: AgentPolicy
+metadata:
+  name: egress-example
+spec:
+  # ... existing fields ...
+  
+  egress:
+    mode: block | allow | monitor     # Default: allow (no restriction)
+    
+    allowed_hosts:
+      - "api.github.com"
+      - "*.openai.com"
+      - "10.0.0.0/8"                   # CIDR notation
+    
+    denied_hosts:
+      - "*.ngrok.io"
+      - "*.requestbin.com"
+    
+    allowed_ports:
+      - 443
+      - 80
+    
+    denied_ports:
+      - 22
+      - 3389
+```
+
+#### Implementation Considerations
+
+Egress control is inherently platform-specific:
+
+| Platform | Mechanism | Limitations |
+|----------|-----------|-------------|
+| **Linux** | eBPF, seccomp-bpf, network namespaces | Requires CAP_BPF or root |
+| **macOS** | Network Extension, sandbox-exec | Requires entitlements |
+| **Windows** | Windows Filtering Platform (WFP) | Requires admin |
+| **Container** | `--network=none`, network policies | Requires container runtime |
+| **Cross-platform** | DNS-based filtering, HTTP proxy | Bypassable, incomplete |
+
+Implementations MAY support egress control through any mechanism appropriate for their platform. The specification will define the **policy schema** and **expected behavior**, not the enforcement mechanism.
+
+#### Open Questions
+
+1. Should egress rules be per-tool or global?
+2. How to handle DNS resolution (allow DNS but block resolved IP)?
+3. Should there be a "learning mode" to auto-generate allowlists?
+4. How to handle localhost connections (MCP servers often bind locally)?
+
+### D.2 Identity Federation
+
+**Status:** Under Discussion
+
+Allow policies to reference external identity providers:
+
+```yaml
+spec:
+  identity:
+    provider: "oidc"
+    issuer: "https://accounts.google.com"
+    required_claims:
+      email_verified: true
+      hd: "company.com"
+```
+
+### D.3 Policy Inheritance
+
+**Status:** Under Discussion
+
+Allow policies to extend base policies:
+
+```yaml
+apiVersion: aip.io/v1beta1
+kind: AgentPolicy
+metadata:
+  name: team-policy
+spec:
+  extends: "org-base-policy"  # Inherit from another policy
+  allowed_tools:
+    - additional_tool          # Add to parent's list
+```
+
+### D.4 Telemetry and Metrics
+
+**Status:** Under Discussion
+
+Standardized metrics export for observability:
+
+```yaml
+spec:
+  telemetry:
+    metrics:
+      endpoint: "http://prometheus:9090/metrics"
+      format: "prometheus"
+    traces:
+      endpoint: "http://jaeger:14268/api/traces"
+      format: "otlp"
+```
+
+---
+
+## Appendix E: Implementation Notes
+
+This appendix provides guidance for implementers.
+
+### E.1 Reference Implementation
+
+The reference implementation is available at:
+https://github.com/ArangoGutierrez/agent-identity-protocol
+
+It provides:
+- Go-based proxy (`aip-proxy`)
+- Policy engine (`pkg/policy`)
+- DLP scanner (`pkg/dlp`)
+- Audit logger (`pkg/audit`)
+
+### E.2 Testing Against Conformance Suite
+
+```bash
+# Clone the spec repository
+git clone https://github.com/ArangoGutierrez/agent-identity-protocol
+
+# Run conformance tests against your implementation
+cd agent-identity-protocol/spec/conformance
+./run-tests.sh --impl "your-aip-binary"
+```
+
+### E.3 Registering Your Implementation
+
+Implementations that pass the conformance suite may be listed in the official registry. Submit a PR to the AIP repository with:
+- Implementation name and URL
+- Conformance level achieved (Basic/Full/Extended)
+- Platform support matrix

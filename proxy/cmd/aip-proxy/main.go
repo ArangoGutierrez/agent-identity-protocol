@@ -18,6 +18,19 @@
 //   - JSONL audit logging for compliance and debugging
 //   - Monitor mode for testing policies without enforcement
 //
+// TODO(v1beta1): Network Egress Control
+//   The current implementation enforces tool-level authorization but does not
+//   restrict network egress from MCP server subprocesses. A compromised server
+//   could still exfiltrate data via HTTP, DNS, or other protocols.
+//
+//   Proposed approaches (see spec/aip-v1alpha1.md Appendix D):
+//   - Linux: eBPF-based socket filtering, network namespaces
+//   - macOS: Network Extension framework, sandbox-exec profiles
+//   - Container: --network=none with explicit port forwarding
+//   - Cross-platform: Transparent HTTP proxy with allowlist
+//
+//   This is tracked as a future extension in the AIP specification.
+//
 // Usage:
 //
 //	# Basic usage - wrap an MCP server with policy enforcement
