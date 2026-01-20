@@ -8,4 +8,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-require github.com/gopherjs/gopherjs v1.17.2 // indirect
+require (
+	github.com/gopherjs/gopherjs v1.17.2 // indirect
+	golang.org/x/text v0.33.0 // indirect
+)
