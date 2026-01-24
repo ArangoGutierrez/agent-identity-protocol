@@ -2,6 +2,28 @@
 
 ## General
 
+### What's the difference between v1alpha1 and v1alpha2?
+
+v1alpha2 adds robust security features for production deployments:
+- **Identity Tokens**: Cryptographic session binding and replay prevention.
+- **Server-Side Validation**: Centralized policy enforcement via HTTP.
+- **Policy Signatures**: Integrity verification for policy files.
+- **Tool Schema Hashing**: Protection against tool poisoning.
+
+### Do I need identity tokens?
+
+Not for local development. Identity tokens are recommended when:
+- You run agents in a multi-tenant environment.
+- You need to audit *who* (which session) performed an action, not just *what* happened.
+- You are using the centralized AIP Server.
+
+### How do I set up server-side validation?
+
+1.  Enable `spec.server` in your policy.
+2.  Configure TLS (required for non-localhost).
+3.  Set `failover_mode` (recommend `fail_closed` for security).
+4.  See the [Server-Side Validation Guide](../implementations/go-proxy/docs/server-guide.md) for details.
+
 ### What is AIP?
 
 AIP (Agent Identity Protocol) is an open specification for policy-based authorization of AI agent tool calls. It defines how to declare, enforce, and audit what actions an AI agent can perform.

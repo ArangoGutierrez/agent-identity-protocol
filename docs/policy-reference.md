@@ -30,11 +30,14 @@ metadata:
   name: string           # Policy identifier
   version: string        # Semantic version (optional)
   owner: string          # Contact email (optional)
+  signature: string      # Policy signature (optional, v1alpha2)
 spec:
   mode: enforce | monitor
   allowed_tools: [string]
   tool_rules: [ToolRule]
   dlp: DLPConfig
+  identity: IdentityConfig # (optional, v1alpha2)
+  server: ServerConfig     # (optional, v1alpha2)
 ```
 
 ## Metadata
@@ -44,6 +47,7 @@ spec:
 | `name` | string | Yes | Unique identifier for this policy |
 | `version` | string | No | Semantic version (e.g., "1.0.0") |
 | `owner` | string | No | Contact email for policy questions |
+| `signature` | string | No | Ed25519 signature for policy integrity (v1alpha2) |
 
 Example:
 ```yaml
@@ -51,6 +55,7 @@ metadata:
   name: code-review-agent
   version: "2.1.0"
   owner: platform-team@company.com
+  signature: "ed25519:YWJjZGVm..."
 ```
 
 ## Spec Fields
@@ -99,6 +104,7 @@ spec:
       action: string        # allow | block | ask (default: allow)
       allow_args: object    # Argument validation patterns
       rate_limit: string    # Rate limiting (e.g., "10/minute")
+      schema_hash: string   # Tool schema integrity hash (v1alpha2)
 ```
 
 ### Actions
@@ -180,6 +186,64 @@ tool_rules:
 When rate limit is exceeded:
 - Request is blocked with JSON-RPC error code `-32003`
 - Audit log records `RATE_LIMITED` event
+
+## Identity Configuration (v1alpha2)
+
+Configure agent identity and session management.
+
+```yaml
+spec:
+  identity:
+    enabled: true             # Enable identity management
+    token_ttl: "10m"          # Token lifetime
+    rotation_interval: "8m"   # Rotate before expiry
+    require_token: true       # Enforce token presence
+    session_binding: "strict" # Binding mode
+    audience: "https://api.example.com" # Token audience
+```
+
+### Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable identity features |
+| `token_ttl` | duration | `"5m"` | Token time-to-live |
+| `rotation_interval` | duration | `"4m"` | When to rotate token |
+| `require_token` | bool | `false` | Block requests without valid token |
+| `session_binding` | string | `"process"` | `process`, `policy`, or `strict` |
+| `audience` | string | `metadata.name` | Token audience URI |
+
+### Session Binding Modes
+
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| `process` | Binds to OS process ID | Single-machine, local agents |
+| `policy` | Binds to policy hash | Distributed agents sharing policy |
+| `strict` | Binds to process + policy + host | High security, non-ephemeral |
+
+## Server Configuration (v1alpha2)
+
+Configure the built-in HTTP server for remote validation.
+
+```yaml
+spec:
+  server:
+    enabled: true
+    listen: "127.0.0.1:9443"
+    failover_mode: "fail_closed"
+    tls:
+      cert: "/path/to/cert.pem"
+      key: "/path/to/key.pem"
+```
+
+### Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable HTTP server |
+| `listen` | string | `"127.0.0.1:9443"` | Bind address |
+| `failover_mode` | string | `"fail_closed"` | `fail_closed`, `fail_open`, `local_policy` |
+| `timeout` | duration | `"5s"` | Validation timeout |
 
 ## DLP Configuration
 
@@ -336,6 +400,18 @@ AIP validates policies at startup. Common errors:
 | `empty allowed_tools` | No tools specified | Add tools or tool_rules |
 | `invalid regex in allow_args` | Bad regex pattern | Validate regex syntax |
 | `invalid rate_limit format` | Wrong rate limit format | Use `<N>/<period>` |
+| `rotation_interval >= token_ttl` | Rotation must happen before expiry | Reduce rotation_interval |
+
+### Common Error Codes
+
+| Code | Name | Description |
+|------|------|-------------|
+| -32001 | Forbidden | Tool not allowed |
+| -32002 | Rate Limited | Too many requests |
+| -32008 | Token Required | Missing identity token (v1alpha2) |
+| -32009 | Token Invalid | Expired or invalid token (v1alpha2) |
+| -32010 | Signature Invalid | Policy signature verification failed (v1alpha2) |
+| -32013 | Schema Mismatch | Tool definition changed (v1alpha2) |
 
 ### Testing Policies
 
